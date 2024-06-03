@@ -1,2 +1,4 @@
-griptape
+griptape[all]@git+https://github.com/griptape-ai/griptape@french/240514/transcription--transcription
+requests
 python-dotenv
+elevenlabs

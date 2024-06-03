@@ -14,6 +14,7 @@ from griptape.tasks import PromptTask, CodeExecutionTask, TextToSpeechTask, Base
 
 load_dotenv()
 
+print(sys.argv)
 input_obj = json.loads(sys.argv[1])
 # input_audio_file_url = input_obj["audio_file_url"]
 input_text_url = input_obj["text_url"]

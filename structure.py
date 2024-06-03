@@ -2,6 +2,7 @@ import json
 import os
 import sys
 
+import boto3
 from dotenv import load_dotenv
 
 from griptape.artifacts import TextArtifact
@@ -9,18 +10,27 @@ from griptape.drivers import ElevenLabsTextToSpeechDriver
 from griptape.engines import TextToSpeechEngine
 from griptape.structures import Workflow
 from griptape.tools import WebScraper
-from griptape.tasks import PromptTask, CodeExecutionTask, TextToSpeechTask, BaseTask, ToolTask
+from griptape.tasks import PromptTask, CodeExecutionTask, TextToSpeechTask, BaseTask, ToolTask, ToolkitTask
 
 
 load_dotenv()
 
-print(sys.argv)
+# input_ = '{"text_url":"https://www.griptape.ai/blog/announcing-griptape","languages":["french"],"output_bucket":"griptape-andrew-test-bucket"}'
 input_obj = json.loads(sys.argv[1])
+# input_obj = json.loads(input_)
 # input_audio_file_url = input_obj["audio_file_url"]
 input_text_url = input_obj["text_url"]
 # "https://www.griptape.ai/blog/announcing-griptape"
 langs = input_obj["languages"]
 # ["english", "german", "french", "spanish"]
+
+boto3_session = boto3.Session(
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    aws_session_token=os.environ["AWS_SESSION_TOKEN"],
+    region_name=os.environ["AWS_REGION"],
+)
+s3_client = boto3_session.client("s3")
 
 webscraper_task = ToolTask(
     f"Return the content of this blog post: {input_text_url}",
@@ -56,9 +66,10 @@ def make_translation_task(lang: str) -> list[BaseTask]:
         id=f"translation_task_{lang}",
     )
 
+    outfile = f"blog_post_{lang}.mp3"
     tts_task = TextToSpeechTask(
         lambda task: task.parents[0].output,
-        output_file=f"/Users/andrew/Downloads/demolangs/blog_post_{lang}.mp3",
+        output_file=outfile,
         text_to_speech_engine=TextToSpeechEngine(
             text_to_speech_driver=ElevenLabsTextToSpeechDriver(
                 api_key=os.environ["ELEVEN_LABS_API_KEY"],
@@ -69,7 +80,16 @@ def make_translation_task(lang: str) -> list[BaseTask]:
         id=f"tts_task_{lang}",
     )
 
-    return [translate_task, tts_task]
+    def upload_to_s3_fn(task):
+        s3_client.upload_file(outfile, input_obj["output_bucket"], outfile)
+        return TextArtifact("Done.")
+
+    upload_to_s3_task = CodeExecutionTask(
+        run_fn=upload_to_s3_fn,
+        id=f"upload_to_s3_{lang}",
+    )
+
+    return [translate_task, tts_task, upload_to_s3_task]
 
 
 end_task = CodeExecutionTask(
@@ -85,5 +105,6 @@ workflow.add_task(end_task)
 for translation_task in translation_tasks:
     workflow.insert_tasks(webscraper_task, [translation_task[0]], end_task)
     workflow.insert_tasks(translation_task[0], [translation_task[1]], end_task)
+    workflow.insert_tasks(translation_task[1], [translation_task[2]], end_task)
 
 workflow.run()

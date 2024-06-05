@@ -1,110 +1,85 @@
+from datetime import datetime
 import json
 import os
-import sys
 
 import boto3
 from dotenv import load_dotenv
 
-from griptape.artifacts import TextArtifact
 from griptape.drivers import ElevenLabsTextToSpeechDriver
 from griptape.engines import TextToSpeechEngine
-from griptape.structures import Workflow
-from griptape.tools import WebScraper
-from griptape.tasks import PromptTask, CodeExecutionTask, TextToSpeechTask, BaseTask, ToolTask, ToolkitTask
-
+from griptape.rules import Rule
+from griptape.structures import Agent
+from griptape.tools import WebScraper, AwsS3Client
+from griptape.tools.text_to_speech_client.tool import TextToSpeechClient
 
 load_dotenv()
 
-# input_ = '{"text_url":"https://www.griptape.ai/blog/announcing-griptape","languages":["french"],"output_bucket":"griptape-andrew-test-bucket"}'
-input_obj = json.loads(sys.argv[1])
-# input_obj = json.loads(input_)
-# input_audio_file_url = input_obj["audio_file_url"]
-input_text_url = input_obj["text_url"]
-# "https://www.griptape.ai/blog/announcing-griptape"
-langs = input_obj["languages"]
-# ["english", "german", "french", "spanish"]
+# Example input:
+# {
+#     "text_url": "https://www.griptape.ai/blog/announcing-griptape",
+#     "languages": [
+#         "finnish",
+#         "korean"
+#     ],
+#     "output_bucket": "griptape-andrew-test-bucket"
+# }
 
-boto3_session = boto3.Session(
+input_obj = json.loads(sys.argv[1])
+input_text_url = input_obj["text_url"]
+langs = input_obj["languages"]
+output_bucket = input_obj["output_bucket"]
+
+session = boto3.Session(
     aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
     aws_session_token=os.environ["AWS_SESSION_TOKEN"],
-    region_name=os.environ["AWS_REGION"],
-)
-s3_client = boto3_session.client("s3")
-
-webscraper_task = ToolTask(
-    f"Return the content of this blog post: {input_text_url}",
-    tool=WebScraper(off_prompt=False),
-    id="webscraper_task",
 )
 
-# load_audio_task = CodeExecutionTask(
-#     run_fn=lambda _: AudioLoader().load(requests.get(input_audio_file_url).content),
-#     id="load_audio_task",
-# )
-#
-# transcription_task = AudioTranscriptionTask(
-#     input=lambda task: task.parents[0].output,
-#     id="transcription_task",
-# )
-
-
-def make_translation_task(lang: str) -> list[BaseTask]:
-    lang_prompt = (f"Prepare the following text for {lang} speech synthesis. Translate the following text "
-                   f"into {lang} and remove all Markdown formatting characters defining links, headings, "
-                   f"images, and the like.")
-    common_prompt = """
-
-        {{ parent_outputs['webscraper_task'] }}
-    """
-
-    translate_task = PromptTask(
-        f"""
-        {lang_prompt}
-        {common_prompt}
-        """,
-        id=f"translation_task_{lang}",
+tts_engine = TextToSpeechEngine(
+    text_to_speech_driver=ElevenLabsTextToSpeechDriver(
+        api_key=os.environ["ELEVEN_LABS_API_KEY"],
+        model="eleven_multilingual_v2",
+        voice="Daniel",
     )
-
-    outfile = f"blog_post_{lang}.mp3"
-    tts_task = TextToSpeechTask(
-        lambda task: task.parents[0].output,
-        output_file=outfile,
-        text_to_speech_engine=TextToSpeechEngine(
-            text_to_speech_driver=ElevenLabsTextToSpeechDriver(
-                api_key=os.environ["ELEVEN_LABS_API_KEY"],
-                model="eleven_multilingual_v2",
-                voice="Rachel",
-            )
-        ),
-        id=f"tts_task_{lang}",
-    )
-
-    def upload_to_s3_fn(task):
-        s3_client.upload_file(outfile, input_obj["output_bucket"], outfile)
-        return TextArtifact("Done.")
-
-    upload_to_s3_task = CodeExecutionTask(
-        run_fn=upload_to_s3_fn,
-        id=f"upload_to_s3_{lang}",
-    )
-
-    return [translate_task, tts_task, upload_to_s3_task]
-
-
-end_task = CodeExecutionTask(
-    run_fn=lambda _: TextArtifact("Done."),
-    id="end_task",
 )
 
-translation_tasks = [make_translation_task(lang) for lang in langs]
+agent = Agent(
+    rules=[
+        Rule("Translate the text into the each language automatically without relying on external tools or services."),
+        Rule("Provide already translated text as an input to each text-to-speech task."),
+        Rule("Remove all Markdown formatting for headers, links, etc. from the translated text."),
+        Rule("Preserve paragraph breaks to ensure that the speech output is paced naturally."),
+        Rule("Upload the audio content using the upload_memory_artifacts_to_s3 activity."),
+        Rule("Upload object keys with the following name format: <YY>_<MM>_<DD>_<language>.mp3."),
+    ],
+    tools=[
+        WebScraper(),
+        TextToSpeechClient(engine=tts_engine, off_prompt=True),
+        AwsS3Client(session=session),
+    ]
+)
 
-workflow = Workflow()
-workflow.add_task(webscraper_task)
-workflow.add_task(end_task)
-for translation_task in translation_tasks:
-    workflow.insert_tasks(webscraper_task, [translation_task[0]], end_task)
-    workflow.insert_tasks(translation_task[0], [translation_task[1]], end_task)
-    workflow.insert_tasks(translation_task[1], [translation_task[2]], end_task)
+prompt = f"""
+Translate the text content at the provided URL to the requested languages, then generate speech for each language 
+before uploading each output audio artifact to the provided S3 bucket.
 
-workflow.run()
+Input URL: {input_text_url}
+Languages: {langs}
+S3 Bucket: {output_bucket}
+Today's Date: {datetime.now().strftime("%Y-%m-%d")}
+"""
+
+prompt += """
+Respond with a JSON object indicating the success of the task and the S3 object key for each language, this format:
+{
+    "success": true,
+    "outputs": [
+        {
+            "language": "<language>",
+            "url": "<S3 object URL>"
+        }
+    ]
+} 
+"""
+
+agent.run(prompt)

@@ -22,13 +22,12 @@ load_dotenv()
 #         "finnish",
 #         "korean"
 #     ],
-#     "output_bucket": "griptape-andrew-test-bucket"
 # }
 
 input_obj = json.loads(sys.argv[1])
 input_text_url = input_obj["text_url"]
 langs = input_obj["languages"]
-output_bucket = input_obj["output_bucket"]
+output_bucket = os.environ["OUTPUT_AWS_S3_BUCKET_NAME"]
 
 session = boto3.Session(
     aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],

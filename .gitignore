@@ -3,3 +3,8 @@ __pycache__
 .venv
 .idea/
 example-client/
+
+# Output Artifacts
+*.mp3
+*.txt
+
